@@ -1,0 +1,236 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import argparse
+import os
+import re
+import sys
+
+import requests
+
+for func_name in ("get", "post"):
+    orig_func = getattr(requests, func_name)
+    def req_wrapper(*args, **kwargs):
+        try:
+            return orig_func(*args, **kwargs)
+        except (
+            requests.exceptions.MissingSchema,
+            requests.exceptions.ConnectionError,
+            requests.exceptions.ConnectTimeout,
+            requests.exceptions.Timeout,
+            requests.exceptions.RequestException,
+            # ...
+        ) as ex:
+            print(ex.__doc__)
+            sys.exit(1)
+    setattr(requests, func_name, req_wrapper)
+
+TORRSERVER_URL = "http://127.0.0.1:8090"
+HEADERS = {
+    "Content-Type": "application/json"
+}
+
+CATEGORIES = ("movies", "series", "music", "other")
+
+MAGNET_URL_RE = re.compile(r'^magnet:\?xt=urn:btih:[0-9A-Fa-f]{40}(?:&dn=[^&]*|&tr=[^&]*)*')
+BTIH_RE = re.compile(r'^[0-9a-fA-F]{40}$')
+
+
+def request_torrent_list():
+    req = requests.post(f"{TORRSERVER_URL}/torrents", headers=HEADERS, json={"action": "list"})
+    return req.json()
+
+def update_paddings(paddings: dict, data: dict) -> None:
+    for key in data:
+        length = len(str(data[key]))
+        if length > paddings[key]:
+            paddings[key] = length
+
+def convert_size(size: float) -> str:
+    for measure in ("", "B", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"):
+        if size <= 100:
+            return f"{size:.2f} {measure}"
+        size /= 1024
+    return "∞"
+
+def cut_torrent_keys(torrent: dict, keys: list[str]) -> dict:
+    result = {
+        key: torrent[key] for key in torrent if key in keys
+    }
+    for key in ("torrent_size", "length"):
+        try:
+            result[key] = convert_size(result[key])
+        except KeyError:
+            pass
+    return result
+
+def display_data(entries: list, paddings: dict, data_keys: list[str]) -> None:
+    print("\033[1m")
+    print(
+        "  \033[1m".join(str(COL_HEADER_MAP[key]).ljust(paddings[key]) for key in data_keys)
+    )
+    print("\033[0m")
+    for entry in entries:
+        print(
+            "  ".join(str(entry[key]).ljust(paddings[key]) for key in data_keys)
+        )
+
+def get_stream_link(hash: str, from_latest: bool = False) -> str:
+    return f"{TORRSERVER_URL}/playlist?hash={hash}{"&fromlast=true" if from_latest else ""}"
+
+
+user = os.environ.get("TORRSERVER_USER")
+password = os.environ.get("TORRSERVER_PASSWORD")
+
+if user and password:
+    from base64 import b64encode
+    HEADERS["Auth"] = f"Basic ${b64encode((user + password).encode("utf-8"))}"
+
+# TODO: add env variable into help msg
+parser = argparse.ArgumentParser(
+    prog="torrctl",
+    description="CLI for TorrServer",
+    add_help=True,
+)
+subparsers = parser.add_subparsers(dest="action", required=True)
+
+list_parser = subparsers.add_parser("list", aliases=["ls"], help="List available torrents")
+# TODO: add filter by --category
+
+add_parser = subparsers.add_parser("add", help="Add magnet link or .torrent file")
+# TODO: come up with better naming for "link"
+add_parser.add_argument("link", type=str, help="Magnet link or .torrent file path")
+add_parser.add_argument("--category", "-c", required=False, help="Category of torrent (movies, series, music, other)")
+add_parser.add_argument("--url", "-u", action="store_true", help="Print URL for HLS stream (e.g. for MPV)")
+add_parser.add_argument("--latest", "-l", action="store_true", help="Compose .m3u playlist from last played file")
+
+remove_parser = subparsers.add_parser("remove", aliases=["rem", "rm"], help="Remove torrent by its ID")
+remove_parser.add_argument("hash", type=str, help="Infohash of entry")
+
+info_parser = subparsers.add_parser("info", aliases=["i"], help="Show info about entry ID")
+info_parser.add_argument("hash", type=str, help="Infohash of entry")
+
+magnet_parser = subparsers.add_parser("magnet", help="Print magnet link for torrent with infohash")
+magnet_parser.add_argument("hash", type=str, help="Infohash of entry")
+
+args = parser.parse_args()
+
+COL_HEADER_MAP = {
+    "title": "Title",
+    "torrent_size": "Size",
+    "hash": "Infohash",
+    "category": "Category",
+    "id": "ID",
+    "path": "Filename",
+    "length": "Size",
+}
+
+if args.action in ("list", "ls"):
+    # NOTE: response titles may differ from entries in TorrServer's web UI. It somehow converts long torrent names into short ones. This script should do the same.
+    LIST_COLS = ["hash", "title", "torrent_size"]
+    paddings = {key: 0 for key in LIST_COLS}
+    torrents = request_torrent_list()
+    torrents = [cut_torrent_keys(torrent, LIST_COLS) for i, torrent in enumerate(torrents)]
+    for torrent in torrents:
+        update_paddings(paddings, torrent)
+    display_data(torrents, paddings, LIST_COLS)
+elif args.action == "add":
+    # NOTE: handling the case with already existing torrent is not needed. TorrServer will just respond with 200 code and do nothing.
+    link = args.link
+
+    if args.category:
+        if args.category not in CATEGORIES:
+            print("Invalid category!")
+            sys.exit(1)
+
+    if MAGNET_URL_RE.match(link):
+        body = {
+            "action": "add",
+            "save_to_db": True,
+            "link": link
+        }
+        body["category"] = args.category
+        req = requests.post(f"{TORRSERVER_URL}/torrents", json=body)
+    elif os.path.exists(link):
+        with open(link, "rb") as fd:
+            # TODO: pass torrent category in this request
+            req = requests.post(f"{TORRSERVER_URL}/upload", files={"file": fd})
+    else:
+        print("You must specify either magnet link or path to your .torrent file!")
+        sys.exit(1)
+
+    if req.status_code == 200:
+        new_torrent_info = req.json()
+        if args.url:
+            print(get_stream_link(new_torrent_info["hash"], True if args.latest else False))
+        else:
+            print(f"Added new torrent: {new_torrent_info["name"]}")
+    else:
+        if req.status_code == 401:
+            print("You are not authorized!")
+        else:
+            print(f"Unknown error: {req.status_code}")
+        sys.exit(1)
+elif args.action == "info":
+    INFO_COLS = ["id", "path", "length"]
+    paddings = {key: 0 for key in INFO_COLS}
+
+    hash = args.hash
+
+    if not BTIH_RE.match(hash):
+        print("Invalid infohash!")
+        sys.exit(1)
+
+    req = requests.post(f"{TORRSERVER_URL}/cache", json={"action": "get", "hash": hash})
+    if req.status_code in (404, 500):
+        print("No torrent found with this infohash!")
+        sys.exit(1)
+
+    torrent_info = req.json()
+    # Sometimes TorrServer may just respond with empty JSON...
+    if not torrent_info:
+        print("Something went wrong! Try again!")
+        sys.exit(1)
+
+    if category := torrent_info["Torrent"]["category"]:
+        print(f"\033[1mCategory\033[0m: {category}")
+
+    torrent_entries = torrent_info["Torrent"]["file_stats"]
+    torrent_entries = [cut_torrent_keys(entry, INFO_COLS) for entry in torrent_entries]
+    for entry in torrent_entries:
+        update_paddings(paddings, entry)
+    display_data(torrent_entries, paddings, INFO_COLS)
+
+    print(f"\033[1mSeeds, peers\033[0m: {torrent_info["Torrent"]["active_peers"]} / {torrent_info["Torrent"]["total_peers"]}")
+# TODO: get rid of DRY violations
+elif args.action == "magnet":
+    hash = args.hash
+
+    if not BTIH_RE.match(hash):
+        print("Invalid infohash!")
+        sys.exit(1)
+
+    req = requests.post(f"{TORRSERVER_URL}/cache", json={"action": "get", "hash": hash})
+    if req.status_code in (404, 500):
+        print("No torrent found with this infohash!")
+        sys.exit(1)
+
+    torrent_info = req.json()
+    if not torrent_info:
+        print("Something went wrong! Try again!")
+        sys.exit(1)
+
+    print(f"magnet?xt=urn:btih:{hash}&dn={torrent_info["Torrent"]["name"]}")
+elif args.action in ("remove", "rem", "rm"):
+    hash = args.hash
+
+    if not BTIH_RE.match(hash):
+        print("Invalid infohash!")
+        sys.exit(1)
+
+    # NOTE: TorrServer will respond 200 even if torrent with a specified hash doesn't exist.
+    req = requests.post(f"{TORRSERVER_URL}/torrents", json={"action": "rem", "hash": hash})
+    print(f"Removed {hash}")
+else:
+    parser.print_help()
+    sys.exit(1)
