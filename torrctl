@@ -131,9 +131,9 @@ list_parser = subparsers.add_parser("list", aliases=["ls"], help="List available
 
 add_parser = subparsers.add_parser("add", help="Add magnet link or .torrent file")
 add_parser.add_argument("torrent", type=str, help="Magnet link or .torrent file path")
-add_parser.add_argument("--category", "-c", required=False, help="Category of torrent (movies, series, music, other)")
 add_parser.add_argument("--url", "-u", action="store_true", help="Print URL for HLS stream (e.g. for MPV)")
 add_parser.add_argument("--latest", "-l", action="store_true", help="Compose .m3u playlist from last played file")
+add_parser.add_argument("--category", "-c", required=False, help="Category of torrent (movies, series, music, other)")
 
 remove_parser = subparsers.add_parser("remove", aliases=["rem", "rm"], help="Remove torrent by its ID")
 remove_parser.add_argument("hash", type=str, help="Infohash of entry")
@@ -170,7 +170,7 @@ if args.action in ("list", "ls"):
     display_data(torrents, paddings, LIST_COLS)
 elif args.action == "add":
     # NOTE: handling the case with already existing torrent is not needed. TorrServer will just respond with 200 code and do nothing.
-    link = args.link
+    link = args.torrent
 
     if args.category:
         if args.category not in CATEGORIES:
