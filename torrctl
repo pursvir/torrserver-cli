@@ -36,6 +36,12 @@ CATEGORIES = ("movies", "series", "music", "other")
 MAGNET_URL_RE = re.compile(r'^magnet:\?xt=urn:btih:[0-9A-Fa-f]{40}(?:&dn=[^&]*|&tr=[^&]*)*')
 BTIH_RE = re.compile(r'^[0-9a-fA-F]{40}$')
 
+if url := os.environ.get("TORRSERVER_URL"):
+    TORRSERVER_URL = url
+
+if (user := os.environ.get("TORRSERVER_USER")) and (password := os.environ.get("TORRSERVER_PASSWORD")):
+    from base64 import b64encode
+    HEADERS["Authorization"] = f"Basic ${b64encode((user + password).encode("utf-8"))}"
 
 def parse_hash(args: argparse.Namespace) -> str:
     hash = args.hash
@@ -107,22 +113,29 @@ def display_data(
         if viewed:
             print("\033[0m", end="")
 
-def get_stream_link(hash: str, from_latest: bool = False) -> str:
+''' NOTE: if torrent with a specified hash doesn't exist, TorrServer will respond with 500 error.
+    If torrent's series ID doesn't exist, TorrServer will respond with 200 code, but empty body.
+    This script doesn't check existence of this entry. App into which you insert the link has to handle this. '''
+
+def get_playlist_link(hash: str, from_latest: bool = False) -> str:
     return f"{TORRSERVER_URL}/playlist?hash={hash}{"&fromlast=true" if from_latest else ""}"
 
-
-user = os.environ.get("TORRSERVER_USER")
-password = os.environ.get("TORRSERVER_PASSWORD")
-
-if user and password:
-    from base64 import b64encode
-    HEADERS["Auth"] = f"Basic ${b64encode((user + password).encode("utf-8"))}"
+def get_stream_link(hash: str, id: int) -> str:
+    return f"{TORRSERVER_URL}/play/{hash}/{id}"
 
 # TODO: add env variable into help msg
 parser = argparse.ArgumentParser(
     prog="torrctl",
     description="CLI for TorrServer",
     add_help=True,
+    epilog='''
+environment variables:
+    TORRSERVER_URL - URL of TorrServer instance
+        Default value - http://127.0.0.1:8090
+    TORRSERVER_USER - TorrServer username
+    TORRSERVER_PASSWORD - TorrServer password
+''',
+    formatter_class=argparse.RawDescriptionHelpFormatter
 )
 subparsers = parser.add_subparsers(dest="action", required=True)
 
@@ -140,6 +153,14 @@ remove_parser.add_argument("hash", type=str, help="Infohash of entry")
 
 info_parser = subparsers.add_parser("info", aliases=["i"], help="Show info about entry ID")
 info_parser.add_argument("hash", type=str, help="Infohash of entry")
+
+playlist_parser = subparsers.add_parser("playlist", help="Print .m3u playlist URL for torrent entry")
+playlist_parser.add_argument("hash", type=str, help="Infohash of entry")
+playlist_parser.add_argument("--latest", "-l", action="store_true", help="Compose .m3u playlist from last played file")
+
+play_parser = subparsers.add_parser("play", help="Print link for HLS stream of individual series of torrent entry")
+play_parser.add_argument("hash", type=str, help="Infohash of entry")
+play_parser.add_argument("id", type=int, help="Series number")
 
 magnet_parser = subparsers.add_parser("magnet", help="Print magnet link for torrent with infohash")
 magnet_parser.add_argument("hash", type=str, help="Infohash of entry")
@@ -196,7 +217,7 @@ elif args.action == "add":
     if req.status_code == 200:
         new_torrent_info = req.json()
         if args.url:
-            print(get_stream_link(new_torrent_info["hash"], True if args.latest else False))
+            print(get_playlist_link(new_torrent_info["hash"], True if args.latest else False))
         else:
             print(f"Added new torrent: {new_torrent_info["name"]}")
     else:
@@ -227,6 +248,18 @@ elif args.action == "info":
     display_data(torrent_entries, paddings, INFO_COLS, "id", viewed_entries)
 
     print(f"\033[1mSeeds, peers\033[0m: {torrent_info["Torrent"]["active_peers"]} / {torrent_info["Torrent"]["total_peers"]}")
+
+elif args.action == "playlist":
+    hash = parse_hash(args)
+    print(get_playlist_link(hash, True if args.latest else False))
+
+elif args.action == "play":
+    hash = parse_hash(args)
+    id = args.id
+    if id <= 0:
+        print("Invalid ID!")
+        sys.exit(1)
+    print(get_stream_link(hash, id))
 
 elif args.action == "magnet":
     hash = parse_hash(args)
