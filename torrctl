@@ -257,7 +257,7 @@ elif args.action == "add":
     elif os.path.exists(link):
         with open(link, "rb") as fd:
             # TODO: pass torrent category in this request
-            req = requests.post(f"{TORRSERVER_URL}/upload", files={"file": fd})
+            req = requests.post(f"{TORRSERVER_URL}/torrent/upload", files={"file": fd})
     else:
         print("You must specify either magnet link or path to your .torrent file!")
         sys.exit(1)
