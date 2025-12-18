@@ -1,9 +1,9 @@
 A simple CLI for interacting with [TorrServer](https://github.com/YouROK/TorrServer) instances, written in Python.
 
-The only external module used is `requests`:
+Install script dependencies:
 
 ```sh
-pip install requests
+pip install requests parse-torrent-title
 ```
 
 Documentation:
@@ -20,6 +20,6 @@ mpv $(torrctl add -u "YOUR_MAGNET_LINK")
 
 # Troubleshooting
 
-- `"Empty playlist!"`
+- `"Empty playlist!"`, `"Something went wrong!"`
 
 TorrServer may sometimes respond with empty messages. Just run the same command after a few seconds.

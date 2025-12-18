@@ -7,6 +7,7 @@ import re
 import sys
 
 import requests
+import PTN as ptn
 
 for func_name in ("get", "post"):
     orig_func = getattr(requests, func_name)
@@ -36,7 +37,21 @@ CATEGORIES = ("movies", "series", "music", "other")
 MAGNET_URL_RE = re.compile(r'^magnet:\?xt=urn:btih:[0-9A-Fa-f]{40}(?:&dn=[^&]*|&tr=[^&]*)*')
 BTIH_RE = re.compile(r'^[0-9a-fA-F]{40}$')
 
+LS_HEADER_MAP = {
+    "title": "Title",
+    "torrent_size": "Size",
+    "hash": "Infohash",
+    "category": "Category",
+}
+
+INFO_HEADER_MAP = {
+    "id": "ID",
+    "path": "Filename",
+    "length": "Size",
+}
+
 if url := os.environ.get("TORRSERVER_URL"):
+    # TODO: validate URL, must be http|https:// and host, without paths and query
     TORRSERVER_URL = url
 
 if (user := os.environ.get("TORRSERVER_USER")) and (password := os.environ.get("TORRSERVER_PASSWORD")):
@@ -52,7 +67,22 @@ def parse_hash(args: argparse.Namespace) -> str:
 
     return hash
 
-def request_torrent_list():
+def parse_id(args: argparse.Namespace) -> int:
+    id = args.id
+    if id <= 0:
+        print("Invalid ID!")
+        sys.exit(1)
+    return id
+
+def parse_fields(fields_comma: str, field_map: dict) -> list[str]:
+    fields = fields_comma.split(",")
+    for field in fields:
+        if field not in field_map:
+            print(f"Invalid field: {field}")
+            sys.exit(1)
+    return fields
+
+def request_torrent_list() -> list[dict]:
     req = requests.post(f"{TORRSERVER_URL}/torrents", headers=HEADERS, json={"action": "list"})
     return req.json()
 
@@ -72,8 +102,11 @@ def request_torrent_info(hash: str) -> dict:
 def update_paddings(paddings: dict, data: dict) -> None:
     for key in data:
         length = len(str(data[key]))
-        if length > paddings[key]:
-            paddings[key] = length
+        try:
+            if length > paddings[key]:
+                paddings[key] = length
+        except KeyError:
+            pass
 
 def convert_size(size: float) -> str:
     for measure in ("", "B", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"):
@@ -81,6 +114,13 @@ def convert_size(size: float) -> str:
             return f"{size:.2f} {measure}"
         size /= 1024
     return "∞"
+
+def shorten_title(title: str) -> str:
+    meta = ptn.parse(title)
+    result = meta["title"]
+    if meta.get("year"): result += f" ({meta["year"]})"
+    if meta.get("resolution"): result += f" [{meta["resolution"]}]"
+    return result
 
 def cut_torrent_keys(torrent: dict, keys: list[str]) -> dict:
     result = {
@@ -93,16 +133,16 @@ def cut_torrent_keys(torrent: dict, keys: list[str]) -> dict:
             pass
     return result
 
-
 def display_data(
-    entries: list, paddings: dict, data_keys: list[str],
-    bold_key: str | None = None, bold_values: list[str] | None = None
+    entries: list, paddings: dict, data_keys: list[str], field_map: dict,
+    plain: bool = False, bold_key: str | None = None, bold_values: list[str] | None = None
 ) -> None:
-    print("\033[1m", end="")
-    print(
-        "  ".join(str(COL_HEADER_MAP[key]).ljust(paddings[key]) for key in data_keys)
-    )
-    print("\033[0m", end="")
+    if not plain:
+        print("\033[1m", end="")
+        print(
+            "  ".join(str(field_map[key]).ljust(paddings[key]) for key in data_keys)
+        )
+        print("\033[0m", end="")
 
     for entry in entries:
         if viewed := bold_values and str(entry[bold_key]) in bold_values:
@@ -140,12 +180,15 @@ environment variables:
 subparsers = parser.add_subparsers(dest="action", required=True)
 
 list_parser = subparsers.add_parser("list", aliases=["ls"], help="List available torrents")
+# TODO: print possible fields
+list_parser.add_argument("--fields", "-f", type=str, help="Columns the output table has to include, separated by comma (e.g., \"hash,title\"")
+list_parser.add_argument("--plain", "-p", action="store_true", help="Plain output (do not print table header)")
 # TODO: add filter by --category
 
 add_parser = subparsers.add_parser("add", help="Add magnet link or .torrent file")
 add_parser.add_argument("torrent", type=str, help="Magnet link or .torrent file path")
-add_parser.add_argument("--url", "-u", action="store_true", help="Print URL for HLS stream (e.g. for MPV)")
-add_parser.add_argument("--latest", "-l", action="store_true", help="Compose .m3u playlist from last played file")
+add_parser.add_argument("--url", "-u", required=False, action="store_true", help="Print URL for HLS stream (e.g. for MPV)")
+add_parser.add_argument("--latest", "-l", required=False, action="store_true", help="Compose .m3u playlist from last played file")
 add_parser.add_argument("--category", "-c", required=False, help="Category of torrent (movies, series, music, other)")
 
 remove_parser = subparsers.add_parser("remove", aliases=["rem", "rm"], help="Remove torrent by its ID")
@@ -162,6 +205,15 @@ play_parser = subparsers.add_parser("play", help="Print link for HLS stream of i
 play_parser.add_argument("hash", type=str, help="Infohash of entry")
 play_parser.add_argument("id", type=int, help="Series number")
 
+preload_parser = subparsers.add_parser("preload", help="Preload torrent's file into TorrServer's cache")
+preload_parser.add_argument("hash", type=str, help="Infohash of entry")
+preload_parser.add_argument("id", type=int, help="Series number")
+
+unload_parser = subparsers.add_parser("unload", help="Unload torrent from TorrServer's cache")
+unload_parser.add_argument("hash", type=str, help="Infohash of entry")
+
+# TODO: /ffp
+
 magnet_parser = subparsers.add_parser("magnet", help="Print magnet link for torrent with infohash")
 magnet_parser.add_argument("hash", type=str, help="Infohash of entry")
 
@@ -169,26 +221,22 @@ stat_parser = subparsers.add_parser("stat", help="Print TorrServer's stats")
 
 args = parser.parse_args()
 
-COL_HEADER_MAP = {
-    "title": "Title",
-    "torrent_size": "Size",
-    "hash": "Infohash",
-    "category": "Category",
-    "id": "ID",
-    "path": "Filename",
-    "length": "Size",
-}
 
 if args.action in ("list", "ls"):
-    # NOTE: response titles may differ from entries in TorrServer's web UI. It somehow converts long torrent names into short ones. This script should do the same.
-    LIST_COLS = ["hash", "title", "torrent_size"]
+    if not args.fields:
+        LIST_COLS = ["hash", "title", "torrent_size"]
+    else:
+        LIST_COLS = parse_fields(args.fields, LS_HEADER_MAP)
+
     paddings = {key: 0 for key in LIST_COLS}
     torrents = request_torrent_list()
-    torrents = [cut_torrent_keys(torrent, LIST_COLS) for i, torrent in enumerate(torrents)]
 
-    for torrent in torrents:
-        update_paddings(paddings, torrent)
-    display_data(torrents, paddings, LIST_COLS)
+    for i in range (len(torrents)):
+        torrents[i]["title"] = shorten_title(torrents[i]["title"])
+        torrents[i]["torrent_size"] = convert_size(torrents[i]["torrent_size"])
+        update_paddings(paddings, torrents[i])
+    display_data(torrents, paddings, LIST_COLS, LS_HEADER_MAP, bool(args.plain))
+
 elif args.action == "add":
     # NOTE: handling the case with already existing torrent is not needed. TorrServer will just respond with 200 code and do nothing.
     link = args.torrent
@@ -238,14 +286,14 @@ elif args.action == "info":
         print(f"\033[1mCategory\033[0m: {category}")
 
     torrent_entries = torrent_info["Torrent"]["file_stats"]
-    torrent_entries = [cut_torrent_keys(entry, INFO_COLS) for entry in torrent_entries]
 
     req = requests.post(f"{TORRSERVER_URL}/viewed", json={"action": "list", "hash": hash})
     viewed_entries = list(map(lambda entry: str(entry["file_index"]), req.json()))
 
-    for entry in torrent_entries:
-        update_paddings(paddings, entry)
-    display_data(torrent_entries, paddings, INFO_COLS, "id", viewed_entries)
+    for i in range(len(torrent_entries)):
+        torrent_entries[i]["length"] = convert_size(torrent_entries[i]["length"])
+        update_paddings(paddings, torrent_entries[i])
+    display_data(torrent_entries, paddings, INFO_COLS, INFO_HEADER_MAP, False, "id", viewed_entries)
 
     print(f"\033[1mSeeds, peers\033[0m: {torrent_info["Torrent"]["active_peers"]} / {torrent_info["Torrent"]["total_peers"]}")
 
@@ -255,11 +303,19 @@ elif args.action == "playlist":
 
 elif args.action == "play":
     hash = parse_hash(args)
-    id = args.id
-    if id <= 0:
-        print("Invalid ID!")
-        sys.exit(1)
+    id = parse_id(args)
     print(get_stream_link(hash, id))
+
+elif args.action == "preload":
+    hash = parse_hash(args)
+    id = parse_id(args)
+    req = requests.get(f"{TORRSERVER_URL}/stream", params={"link": hash, "index": id, "preload": ""})
+    print(f"Preloading {hash}")
+
+elif args.action == "unload":
+    hash = parse_hash(args)
+    req = requests.post(f"{TORRSERVER_URL}/torrents", params={"action": "drop", "hash": hash})
+    print(f"Unloading {hash}")
 
 elif args.action == "magnet":
     hash = parse_hash(args)
