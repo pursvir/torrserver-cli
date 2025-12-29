@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2155,SC2207
+
+_torrctl_completion() {
+  local curr prev cword
+
+  curr="${COMP_WORDS[COMP_CWORD]}"
+  prev="${COMP_WORDS[COMP_CWORD-1]}"
+  cword="${COMP_CWORD}"
+
+  case $cword in
+    1)
+      COMPREPLY=( $(compgen -W "list ls add remove rem rm info i play playlist magnet stat" -- "$curr") )
+      ;;
+    # TODO: completions for --options
+    # TODO: completions for --fields possible values for ls and info commands
+    *)
+      case $prev in
+        remove|rem|rm|info|i|playlist|play|magnet|load|unload)
+          local infohashes=$(torrctl ls -f hash -p 2> /dev/null)
+          # TODO: do not compreply if the command above returned 1
+          COMPREPLY=( $(compgen -W "$infohashes" -- "$curr") )
+          ;;
+      esac
+  esac
+}
+
+complete -F _torrctl_completion torrctl
