@@ -1,4 +1,4 @@
-A simple CLI for interacting with [TorrServer](https://github.com/YouROK/TorrServer) instances, written in Python.
+A simple CLI for interacting with [TorrServer](https://github.com/YouROK/TorrServer) instances, written in Python. Inspired by [peerflix](https://github.com/mafintosh/peerflix).
 
 Install script dependencies:
 
